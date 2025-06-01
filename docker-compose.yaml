@@ -1,0 +1,10 @@
+services:
+  transcription-worker:
+    build:
+      context: ./
+      dockerfile: ./docker/Dockerfile
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./locks:/app/locks

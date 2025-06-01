@@ -1,0 +1,281 @@
+import base64
+import json
+import os
+import sys
+import tempfile
+import uuid
+import asyncio
+import logging
+import ffmpeg
+
+import requests
+from requests.models import Response
+
+ARISTOTE_API_BASE_URL = os.environ["ARISTOTE_API_BASE_URL"]
+ARISTOTE_API_CLIENT_ID = os.environ["ARISTOTE_API_CLIENT_ID"]
+ARISTOTE_API_CLIENT_SECRET = os.environ["ARISTOTE_API_CLIENT_SECRET"]
+WHISPER_BASE_URL = os.environ["WHISPER_BASE_URL"]
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger(__name__)
+
+
+def extract_audio(video_path, output_path, bitrate="64k", codec="mp3"):
+    probe = ffmpeg.probe(video_path)
+    duration = float(probe["format"]["duration"])
+    logger.debug("Media duration: %s seconds", duration)
+
+    input_file = ffmpeg.input(video_path)
+    audio = input_file["a:0"]
+    output_file = ffmpeg.output(audio, output_path, acodec=codec, audio_bitrate=bitrate)
+    ffmpeg.run(output_file, quiet=True)
+
+
+def download_video(url, save_path) -> bool:
+    response = requests.get(url, stream=True, timeout=60)
+    if response.status_code == 200:
+        with open(save_path, "wb") as file:
+            for chunk in response.iter_content(chunk_size=1024):
+                if chunk:
+                    file.write(chunk)
+        logger.debug("Video downloaded successfully to %s", save_path)
+        return True
+
+    logger.error("Failed to download media. Status code: %s", response.status_code)
+    return False
+
+
+def get_token():
+    token_response: Response = requests.post(
+        f"{ARISTOTE_API_BASE_URL}/token",
+        json={
+            "grant_type": "client_credentials",
+        },
+        headers={
+            "Authorization": "Basic "
+            + base64.b64encode(
+                f"{ARISTOTE_API_CLIENT_ID}:{ARISTOTE_API_CLIENT_SECRET}".encode()
+            ).decode(),
+        },
+        timeout=1000,
+    )
+
+    if token_response.status_code == 200:
+        return token_response.json()["access_token"]
+    else:
+        logger.error("Couldn't get token. Error code : %s", token_response.status_code)
+        raise Exception(
+            "Couldn't get token. Error code : %s", token_response.status_code
+        )
+
+
+def transcription_fail(
+    enrichment_id: str,
+    task_id: str,
+    token: str,
+    failure_cause: str,
+    exit_with_error: bool = True,
+):
+    failure_cause_trucated = (
+        (failure_cause[:252] + "...") if len(failure_cause) > 255 else failure_cause
+    )
+    transcription_failure_response: Response = requests.post(
+        f"{ARISTOTE_API_BASE_URL}/v1/enrichments/{enrichment_id}/versions/initial/transcript",
+        data={
+            "taskId": task_id,
+            "status": "KO",
+            "failureCause": failure_cause_trucated,
+        },
+        headers={"Authorization": "Bearer " + token},
+        timeout=30,
+    )
+
+    if transcription_failure_response.status_code == 200:
+        logger.info("Transcription failure response sent")
+    else:
+        logger.error("Couldn't send failure response")
+
+    if exit_with_error:
+        raise Exception(failure_cause)
+
+
+async def aristote_worklow():
+    whisper_readiness: Response = requests.get(f"{WHISPER_BASE_URL}/healthz", timeout=5)
+
+    if whisper_readiness.status_code != 200:
+        logger.info("Couldn't connect to whisper.")
+        raise Exception("Couldn't connect to whisper.")
+
+    token = get_token()
+
+    task_id = str(uuid.uuid4())
+
+    job_response: Response = requests.get(
+        f"{ARISTOTE_API_BASE_URL}/v1/enrichments/transcription/job/oldest?taskId={task_id}",
+        headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/json",
+        },
+        timeout=30,
+    )
+
+    if job_response.status_code == 200:
+        json_response = job_response.json()
+        enrichment_id = json_response["enrichmentId"]
+        media_temporary_url = json_response["mediaTemporaryUrl"]
+        language = json_response["language"]
+    else:
+        logger.info("Couldn't get a job. Error code : %s", job_response.status_code)
+        return
+
+    logger.info("Transcribing enrichment : %s", enrichment_id)
+
+    media_file_path = f"media-{task_id}.mp4"
+    audio_file_path = f"media-{task_id}.mp3"
+
+    try:
+        video_downloaded = download_video(media_temporary_url, media_file_path)
+        if not video_downloaded:
+            logger.error("Video could not be downloaded")
+            return
+    except Exception:
+        if os.path.exists(media_file_path):
+            os.remove(media_file_path)
+        logger.error("Error downloading video")
+        return
+
+    try:
+        extract_audio(media_file_path, audio_file_path)
+    except Exception:
+        if os.path.exists(media_file_path):
+            os.remove(media_file_path)
+
+        if os.path.exists(audio_file_path):
+            os.remove(audio_file_path)
+        logger.error("Error converting video to audio")
+
+        transcription_fail(
+            enrichment_id=enrichment_id,
+            task_id=task_id,
+            token=token,
+            failure_cause="Error converting video to audio. Maybe the video has no audio ?",
+        )
+        return
+
+    files = {"audio": (audio_file_path, open(audio_file_path, "rb"), "audio/wave")}
+
+    params = {}
+
+    if language:
+        params["language"] = language
+
+    json_params = json.dumps(params)
+
+    try:
+        whisper_response = requests.post(
+            f"{WHISPER_BASE_URL}/predict",
+            files=files,
+            data={"params": json_params},
+            timeout=10000,
+        )
+    except Exception as error:
+        if os.path.exists(media_file_path):
+            os.remove(media_file_path)
+
+        if os.path.exists(audio_file_path):
+            os.remove(audio_file_path)
+
+        logger.error("Whisper did not respond. Error : %s", error)
+        transcription_fail(
+            enrichment_id=enrichment_id,
+            task_id=task_id,
+            token=token,
+            failure_cause=f"Whisper error : {error}",
+        )
+        return
+    if os.path.exists(media_file_path):
+        os.remove(media_file_path)
+    if os.path.exists(audio_file_path):
+        os.remove(audio_file_path)
+    if whisper_response.status_code == 200:
+        transcript_json = whisper_response.json()
+    else:
+        logger.error(
+            "Whisper failed transcription. Error code : %s",
+            whisper_response.status_code,
+        )
+        transcription_fail(
+            enrichment_id=enrichment_id,
+            task_id=task_id,
+            token=token,
+            failure_cause=f"Whisper error : {whisper_response.json()}",
+        )
+        return
+
+    if 0 == len(transcript_json["chunks"]):
+        transcription_fail(
+            enrichment_id=enrichment_id,
+            task_id=task_id,
+            token=token,
+            failure_cause="Generated empty transcript",
+            exit_with_error=False,
+        )
+        return
+
+    transcript = {
+        "original_file_name": "",
+        "language": transcript_json["language"],
+        "text": transcript_json["text"],
+        "sentences": list(
+            map(
+                lambda chunk: {
+                    "text": chunk["text"],
+                    "start": chunk["timestamp"][0],
+                    "end": chunk["timestamp"][1],
+                    "words": list(
+                        map(
+                            lambda word: {
+                                "text": word["text"],
+                                "start": word["timestamp"][0],
+                                "end": word["timestamp"][1],
+                            },
+                            chunk["words"],
+                        )
+                    ),
+                },
+                transcript_json["chunks"],
+            )
+        ),
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w+", delete=False) as temp_file:
+        json.dump(transcript, temp_file)
+
+    files = {"transcript": (temp_file.name, open(temp_file.name, "rb"))}
+
+    transcription_response: Response = requests.post(
+        f"{ARISTOTE_API_BASE_URL}/v1/enrichments/{enrichment_id}/versions/initial/transcript",
+        data={"taskId": task_id, "status": "OK"},
+        files=files,
+        headers={"Authorization": "Bearer " + token},
+        timeout=30,
+    )
+
+    if transcription_response.status_code == 200:
+        logger.info("Transcription successful !")
+    else:
+        logger.error(
+            "Transcription failed. Error code : %s", transcription_response.status_code
+        )
+        raise Exception(
+            "Transcription failed. Error code : %s", transcription_response.status_code
+        )
+
+
+if __name__ == "__main__":
+    asyncio.run(aristote_worklow())
