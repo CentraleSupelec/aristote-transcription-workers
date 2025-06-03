@@ -1,5 +1,5 @@
 services:
-  transcription-worker:
+  worker:
     build:
       context: ./
       dockerfile: ./docker/Dockerfile
@@ -8,3 +8,27 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./locks:/app/locks
+
+  speaches:
+    image: ghcr.io/speaches-ai/speaches:0.8-cpu
+    ports:
+      - 8000:8000
+    volumes:
+      - hf-cache:/home/ubuntu/.cache/huggingface/hub
+
+  speaches-load-model:
+    image: curlimages/curl:latest
+    env_file:
+      - .env
+    entrypoint: >
+      sh -c '
+        until [ "$(curl -s -o /dev/null -w "%{http_code}" http://speaches:8000/health 2>/dev/null)" = "200" ]; do
+          echo "Waiting for speaches service to become healthy...";
+          sleep 2;
+        done;
+        echo "Sending model load request for $${MODEL}...";
+        curl -sS -X POST http://speaches:8000/v1/models/$${MODEL};
+      '
+
+volumes:
+  hf-cache:
