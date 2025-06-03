@@ -15,6 +15,7 @@ ARISTOTE_API_BASE_URL = os.environ["ARISTOTE_API_BASE_URL"]
 ARISTOTE_API_CLIENT_ID = os.environ["ARISTOTE_API_CLIENT_ID"]
 ARISTOTE_API_CLIENT_SECRET = os.environ["ARISTOTE_API_CLIENT_SECRET"]
 WHISPER_BASE_URL = os.environ["WHISPER_BASE_URL"]
+MODEL = os.environ.get("MODEL")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,11 +106,18 @@ def transcription_fail(
 
 
 async def aristote_worklow():
-    whisper_readiness: Response = requests.get(f"{WHISPER_BASE_URL}/healthz", timeout=5)
+    whisper_readiness: Response = requests.get(WHISPER_BASE_URL, timeout=5)
 
     if whisper_readiness.status_code != 200:
         logger.info("Couldn't connect to whisper.")
         raise Exception("Couldn't connect to whisper.")
+
+    models_response: Response = requests.get(f"{WHISPER_BASE_URL}/v1/models", timeout=5)
+
+    open_ai_compatible_server = True
+
+    if models_response.status_code != 200:
+        open_ai_compatible_server = False
 
     token = get_token()
 
@@ -167,20 +175,32 @@ async def aristote_worklow():
         )
         return
 
-    files = {"audio": (audio_file_path, open(audio_file_path, "rb"), "audio/wave")}
+    # files = {"audio": (audio_file_path, open(audio_file_path, "rb"), "audio/wave")}
+    files = {
+        "file" if open_ai_compatible_server else "audio": (
+            audio_file_path,
+            open(audio_file_path, "rb"),
+            "audio/wave",
+        )
+    }
 
-    params = {}
-
-    if language:
-        params["language"] = language
-
-    json_params = json.dumps(params)
+    if open_ai_compatible_server:
+        data = {
+            "model": MODEL,
+            "timestamp_granularities[]": "word",
+            "response_format": "verbose_json",
+        }
+    else:
+        params = {}
+        if language:
+            params["language"] = language
+        data = {"params": json.dumps(params)}
 
     try:
         whisper_response = requests.post(
-            f"{WHISPER_BASE_URL}/predict",
+            f"{WHISPER_BASE_URL}/{'v1/audio/transcriptions' if open_ai_compatible_server else 'predict'}",
             files=files,
-            data={"params": json_params},
+            data=data,
             timeout=10000,
         )
     except Exception as error:
@@ -217,7 +237,9 @@ async def aristote_worklow():
         )
         return
 
-    if 0 == len(transcript_json["chunks"]):
+    segments = transcript_json.get("chunks") or transcript_json.get("segments") or []
+
+    if 0 == len(segments):
         transcription_fail(
             enrichment_id=enrichment_id,
             task_id=task_id,
@@ -233,22 +255,42 @@ async def aristote_worklow():
         "text": transcript_json["text"],
         "sentences": list(
             map(
-                lambda chunk: {
-                    "text": chunk["text"],
-                    "start": chunk["timestamp"][0],
-                    "end": chunk["timestamp"][1],
+                lambda segment: {
+                    "text": segment["text"],
+                    "start": (
+                        segment["start"]
+                        if open_ai_compatible_server
+                        else segment["timestamp"][0]
+                    ),
+                    "end": (
+                        segment["end"]
+                        if open_ai_compatible_server
+                        else segment["timestamp"][1]
+                    ),
                     "words": list(
                         map(
                             lambda word: {
-                                "text": word["text"],
-                                "start": word["timestamp"][0],
-                                "end": word["timestamp"][1],
+                                "text": (
+                                    word["word"]
+                                    if open_ai_compatible_server
+                                    else word["text"]
+                                ),
+                                "start": (
+                                    word["start"]
+                                    if open_ai_compatible_server
+                                    else word["timestamp"][0]
+                                ),
+                                "end": (
+                                    word["end"]
+                                    if open_ai_compatible_server
+                                    else word["timestamp"][1]
+                                ),
                             },
-                            chunk["words"],
+                            segment["words"],
                         )
                     ),
                 },
-                transcript_json["chunks"],
+                segments,
             )
         ),
     }

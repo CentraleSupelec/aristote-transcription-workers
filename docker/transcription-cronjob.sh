@@ -11,7 +11,7 @@ log() {
 
 while [ -e "$TRANSCRIPTION_COUNTER_FILE_LOCK" ]; do
     log "Counter Lock file exists. Waiting..."
-    sleep $((RANDOM % 1))
+    sleep $(echo "scale=3; $RANDOM/32767" | bc)
 done
 
 touch "$TRANSCRIPTION_COUNTER_FILE_LOCK"
@@ -34,7 +34,11 @@ rm -f "$TRANSCRIPTION_COUNTER_FILE_LOCK"
 
 log "Starting transcription $counter / $MAX_PARALLEL"
 
-/usr/local/bin/python3 /app/transcribe.py
+if curl -s -X GET -I $WHISPER_BASE_URL | grep "200 OK"  &> /dev/null; then
+    /usr/local/bin/python3 /app/transcribe.py
+else
+    echo "$WHISPER_BASE_URL is not yet responsive. Skipping cron job"
+fi
 
 while [ -e "$TRANSCRIPTION_COUNTER_FILE_LOCK" ]; do
     log "Counter Lock file exists. Waiting..."
