@@ -8,3 +8,31 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./locks:/app/locks
+
+  speaches:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    ports:
+      - 8000:8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - hf-cache:/home/ubuntu/.cache/huggingface/hub
+
+  speaches-load-model:
+    image: curlimages/curl:latest
+    depends_on:
+      speaches:
+        condition: service_healthy
+    env_file:
+      - .env
+    entrypoint: >
+      sh -c '
+        echo "Sending model load request for $${MODEL}...";
+        curl -sS -X POST http://speaches:8000/v1/models/$${MODEL};
+      '
+
+volumes:
+  hf-cache:
