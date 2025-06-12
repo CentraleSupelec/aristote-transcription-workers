@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  worker:
+    extends:
+      file: docker-compose.yaml
+      service: worker
+
+  speaches:
+    extends:
+      file: docker-compose.yaml
+      service: speaches
+    image: ghcr.io/speaches-ai/speaches:0.8-cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+
+  speaches-load-model:
+    extends:
+      file: docker-compose.yaml
+      service: speaches-load-model
+
+volumes:
+  hf-cache:
