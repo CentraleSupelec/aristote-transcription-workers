@@ -14,8 +14,14 @@ from requests.models import Response
 ARISTOTE_API_BASE_URL = os.environ["ARISTOTE_API_BASE_URL"]
 ARISTOTE_API_CLIENT_ID = os.environ["ARISTOTE_API_CLIENT_ID"]
 ARISTOTE_API_CLIENT_SECRET = os.environ["ARISTOTE_API_CLIENT_SECRET"]
-WHISPER_BASE_URL = os.environ["WHISPER_BASE_URL"]
+STT_BASE_URL = os.environ["STT_BASE_URL"]
 MODEL = os.environ.get("MODEL")
+API_KEY = os.environ.get("API_KEY")
+
+if API_KEY:
+    headers = {"Authorization": f"Bearer {API_KEY}"}
+else:
+    headers = {}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -106,13 +112,15 @@ def transcription_fail(
 
 
 async def aristote_worklow():
-    whisper_readiness: Response = requests.get(WHISPER_BASE_URL, timeout=5)
 
-    if whisper_readiness.status_code != 200:
-        logger.info("Couldn't connect to whisper.")
-        raise Exception("Couldn't connect to whisper.")
+    stt_readiness: Response = requests.get(STT_BASE_URL, timeout=5, headers=headers)
+    if stt_readiness.status_code != 200 and stt_readiness.status_code != 421:
+        logger.info("Couldn't connect to stt.")
+        raise Exception("Couldn't connect to stt.")
 
-    models_response: Response = requests.get(f"{WHISPER_BASE_URL}/v1/models", timeout=5)
+    models_response: Response = requests.get(
+        f"{STT_BASE_URL}/v1/models", timeout=5, headers=headers
+    )
 
     open_ai_compatible_server = True
 
@@ -197,11 +205,12 @@ async def aristote_worklow():
         data = {"params": json.dumps(params)}
 
     try:
-        whisper_response = requests.post(
-            f"{WHISPER_BASE_URL}/{'v1/audio/transcriptions' if open_ai_compatible_server else 'predict'}",
+        stt_response = requests.post(
+            f"{STT_BASE_URL}/{'v1/audio/transcriptions' if open_ai_compatible_server else 'predict'}",
             files=files,
             data=data,
             timeout=10000,
+            headers=headers,
         )
     except Exception as error:
         if os.path.exists(media_file_path):
@@ -222,32 +231,42 @@ async def aristote_worklow():
         os.remove(media_file_path)
     if os.path.exists(audio_file_path):
         os.remove(audio_file_path)
-    if whisper_response.status_code == 200:
-        transcript_json = whisper_response.json()
+    if stt_response.status_code == 200:
+        transcript_json = stt_response.json()
     else:
         logger.error(
             "Whisper failed transcription. Error code : %s",
-            whisper_response.status_code,
+            stt_response.status_code,
         )
         transcription_fail(
             enrichment_id=enrichment_id,
             task_id=task_id,
             token=token,
-            failure_cause=f"Whisper error : {whisper_response.json()}",
+            failure_cause=f"Whisper error : {stt_response.json()}",
         )
         return
 
     segments = transcript_json.get("chunks") or transcript_json.get("segments") or []
 
     if 0 == len(segments):
-        transcription_fail(
-            enrichment_id=enrichment_id,
-            task_id=task_id,
-            token=token,
-            failure_cause="Generated empty transcript",
-            exit_with_error=False,
-        )
-        return
+        if "words" in transcript_json and len(transcript_json["words"]) > 0:
+            segments = [
+                {
+                    "text": transcript_json["text"],
+                    "start": transcript_json["words"][0]["start"],
+                    "end": transcript_json["words"][-1]["end"],
+                    "words": transcript_json["words"],
+                }
+            ]
+        else:
+            transcription_fail(
+                enrichment_id=enrichment_id,
+                task_id=task_id,
+                token=token,
+                failure_cause="Generated empty transcript",
+                exit_with_error=False,
+            )
+            return
 
     transcript = {
         "original_file_name": "",

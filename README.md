@@ -33,7 +33,7 @@ Update `.env` with:
 | `ARISTOTE_API_BASE_URL` | Base URL of the AristoteAPI |
 | `ARISTOTE_API_CLIENT_ID` | Client ID |
 | `ARISTOTE_API_CLIENT_SECRET` | Client secret |
-| `WHISPER_BASE_URL` | Base URL of the STT server (default is `http://speaches:3000`) |
+| `STT_BASE_URL` | Base URL of the STT server (default is `http://speaches:3000`) |
 | `CRON_SCHEDULE` | Optional. Cron expression to schedule the worker (e.g. `*/5 * * * *`) |
 | `MAX_LOG_DAYS` | Max number of days to retain logs in the `/logs` folder |
 | `MODEL` | ID of the STT model to load |
