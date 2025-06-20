@@ -34,10 +34,10 @@ rm -f "$TRANSCRIPTION_COUNTER_FILE_LOCK"
 
 log "Starting transcription $counter / $MAX_PARALLEL"
 
-if curl -s -X GET -I $WHISPER_BASE_URL | grep "200 OK"  &> /dev/null; then
+if curl -s -X GET -I $STT_BASE_URL | grep -E "200 OK|421"  &> /dev/null; then
     /usr/local/bin/python3 /app/transcribe.py
 else
-    echo "$WHISPER_BASE_URL is not yet responsive. Skipping cron job"
+    echo "$STT_BASE_URL is not yet responsive. Skipping cron job"
 fi
 
 while [ -e "$TRANSCRIPTION_COUNTER_FILE_LOCK" ]; do
