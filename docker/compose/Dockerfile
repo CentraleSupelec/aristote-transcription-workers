@@ -13,7 +13,7 @@ COPY transcribe.py ./
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY docker/entrypoint.sh ./
+COPY docker/compose/entrypoint.sh ./
 COPY docker/transcription-cronjob.sh ./
 COPY docker/clean-up-logs.sh ./
 
