@@ -2,15 +2,18 @@
 
 set -e
 
+SPEACH_PORT=${SPEACH_PORT:-8000}
+
 checkPort8000Open() {
-    egrep -qi ': [0-9A-AF]*:1F40 ' /proc/net/tcp
+    local port=$(printf '%X\n' "${SPEACH_PORT}")
+    egrep -qi ": [0-9A-AF]*:${port} " /proc/net/tcp
 }
 
 loadModelPort8000() {
     local model=${1:-${MODEL:-}}
     test -z "${model}" && error "No model provided"
 
-    local surl=http://localhost:8000
+    local surl=http://localhost:${SPEACH_PORT}
     for ((i=0; i<${SPEACHES_AI_TIMEOUT:-20}; i++)); do
 	if [ "$(curl -s -o /dev/null -w "%{http_code}" ${surl}/health 2>/dev/null)" = "200" ]; then
 	    echo "Sending model load request for ${model}...";
@@ -29,8 +32,10 @@ test -f /venv/bin/activate && . /venv/bin/activate
 if [ -e /app/speaches_ai.sh ]; then
     test -e /app/speaches_ai.env || error "speaches_ai env missing"
     (
-	. /app/speaches_ai.env
-	export UVICORN_PORT=8000
+	test -z "${APPTAINER_NAME:-}" &&
+	    . /app/speaches_ai.env ||
+		. /app/speaches_ai_base.env
+	export UVICORN_PORT=${SPEACH_PORT}
 	/app/speaches_ai.sh
     ) &
     for ((i=0; i<${SPEACHES_AI_TIMEOUT:-20}; i++)); do
@@ -39,7 +44,7 @@ if [ -e /app/speaches_ai.sh ]; then
     done
     checkPort8000Open || error "Timeout waiting for speaches AI."
 fi
-export STT_BASE_URL=http://localhost:8000
+export STT_BASE_URL=http://localhost:${SPEACH_PORT}
 
 TRANSCRIPTION_COUNTER_FILE="/app/locks/transcription-counter"
 TRANSCRIPTION_COUNTER_FILE_LOCK="/app/locks/transcription-counter-lock"
@@ -61,6 +66,7 @@ loadModelPort8000 &
 if [ -z "$CRON_SCHEDULE" ]; then
     echo "[INFO] No CRON_SCHEDULE defined. Running transcribe.py once..."
     python3 /app/transcribe.py
+    sleep 2
 else
     echo "[INFO] CRON_SCHEDULE is set to '$CRON_SCHEDULE'. Scheduling job..."
     (
@@ -83,3 +89,5 @@ else
 	fi
     done
 fi
+echo "End of script: terminating all jobs"
+pkill -P $$
