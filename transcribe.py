@@ -24,7 +24,7 @@ else:
     headers = {}
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)],
@@ -212,6 +212,7 @@ async def aristote_worklow():
             timeout=10000,
             headers=headers,
         )
+        logger.debug(stt_response.text)
     except Exception as error:
         if os.path.exists(media_file_path):
             os.remove(media_file_path)
