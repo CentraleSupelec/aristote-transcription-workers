@@ -269,50 +269,49 @@ async def aristote_worklow():
             )
             return
 
+    def _seg_start(segment: dict) -> float:
+        return float(segment["start"]) if open_ai_compatible_server else float(segment["timestamp"][0])
+
+    def _seg_end(segment: dict) -> float:
+        return float(segment["end"]) if open_ai_compatible_server else float(segment["timestamp"][1])
+
+    def _normalize_word(word: dict) -> dict:
+        return {
+            "text": word["word"] if open_ai_compatible_server else word["text"],
+            "start": float(word["start"]) if open_ai_compatible_server else float(word["timestamp"][0]),
+            "end": float(word["end"]) if open_ai_compatible_server else float(word["timestamp"][1]),
+        }
+
+    def _global_words_norm() -> list:
+        return [_normalize_word(w) for w in (transcript_json.get("words") or [])]
+
+    def _words_for_segment_from_global(seg_s: float, seg_e: float, global_words: list) -> list:
+        eps = 1e-6
+        out = []
+        for w in global_words:
+            if w["end"] >= seg_s - eps and w["start"] <= seg_e + eps:
+                out.append(w)
+        return out
+
+    global_words = _global_words_norm()
+
     transcript = {
         "original_file_name": "",
         "language": transcript_json["language"],
         "text": transcript_json["text"],
-        "sentences": list(
-            map(
-                lambda segment: {
-                    "text": segment["text"],
-                    "start": (
-                        segment["start"]
-                        if open_ai_compatible_server
-                        else segment["timestamp"][0]
-                    ),
-                    "end": (
-                        segment["end"]
-                        if open_ai_compatible_server
-                        else segment["timestamp"][1]
-                    ),
-                    "words": list(
-                        map(
-                            lambda word: {
-                                "text": (
-                                    word["word"]
-                                    if open_ai_compatible_server
-                                    else word["text"]
-                                ),
-                                "start": (
-                                    word["start"]
-                                    if open_ai_compatible_server
-                                    else word["timestamp"][0]
-                                ),
-                                "end": (
-                                    word["end"]
-                                    if open_ai_compatible_server
-                                    else word["timestamp"][1]
-                                ),
-                            },
-                            segment["words"],
-                        )
-                    ),
-                },
-                segments,
-            )
-        ),
+        "sentences": [
+            {
+                "text": segment["text"],
+                "start": _seg_start(segment),
+                "end": _seg_end(segment),
+                "words": (
+                    [_normalize_word(w) for w in segment.get("words", [])]
+                    if segment.get("words")
+                    else _words_for_segment_from_global(_seg_start(segment), _seg_end(segment), global_words)
+                ),
+            }
+            for segment in segments
+        ],
     }
 
     with tempfile.NamedTemporaryFile(mode="w+", delete=False) as temp_file:
