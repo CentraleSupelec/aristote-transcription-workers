@@ -270,22 +270,40 @@ async def aristote_worklow():
             return
 
     def _seg_start(segment: dict) -> float:
-        return float(segment["start"]) if open_ai_compatible_server else float(segment["timestamp"][0])
+        return (
+            float(segment["start"])
+            if open_ai_compatible_server
+            else float(segment["timestamp"][0])
+        )
 
     def _seg_end(segment: dict) -> float:
-        return float(segment["end"]) if open_ai_compatible_server else float(segment["timestamp"][1])
+        return (
+            float(segment["end"])
+            if open_ai_compatible_server
+            else float(segment["timestamp"][1])
+        )
 
     def _normalize_word(word: dict) -> dict:
         return {
             "text": word["word"] if open_ai_compatible_server else word["text"],
-            "start": float(word["start"]) if open_ai_compatible_server else float(word["timestamp"][0]),
-            "end": float(word["end"]) if open_ai_compatible_server else float(word["timestamp"][1]),
+            "start": (
+                float(word["start"])
+                if open_ai_compatible_server
+                else float(word["timestamp"][0])
+            ),
+            "end": (
+                float(word["end"])
+                if open_ai_compatible_server
+                else float(word["timestamp"][1])
+            ),
         }
 
     def _global_words_norm() -> list:
         return [_normalize_word(w) for w in (transcript_json.get("words") or [])]
 
-    def _words_for_segment_from_global(seg_s: float, seg_e: float, global_words: list) -> list:
+    def _words_for_segment_from_global(
+        seg_s: float, seg_e: float, global_words: list
+    ) -> list:
         eps = 1e-6
         out = []
         for w in global_words:
@@ -307,7 +325,9 @@ async def aristote_worklow():
                 "words": (
                     [_normalize_word(w) for w in segment.get("words", [])]
                     if segment.get("words")
-                    else _words_for_segment_from_global(_seg_start(segment), _seg_end(segment), global_words)
+                    else _words_for_segment_from_global(
+                        _seg_start(segment), _seg_end(segment), global_words
+                    )
                 ),
             }
             for segment in segments
