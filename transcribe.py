@@ -350,11 +350,20 @@ async def aristote_worklow():
     if transcription_response.status_code == 200:
         logger.info("Transcription successful !")
     else:
+        try:
+            error_message = transcription_response.json()
+        except ValueError:
+            error_message = transcription_response.text
+
         logger.error(
-            "Transcription failed. Error code : %s", transcription_response.status_code
+            "Transcription failed. Error code : %s / Error message : %s",
+            transcription_response.status_code,
+            error_message,
         )
         raise Exception(
-            "Transcription failed. Error code : %s", transcription_response.status_code
+            "Transcription failed. Error code : %s / Error message : %s",
+            transcription_response.status_code,
+            error_message,
         )
 
 
