@@ -112,34 +112,36 @@ def transcription_fail(
 
 
 async def aristote_worklow():
+    try:
+        stt_readiness: Response = requests.get(STT_BASE_URL, timeout=5, headers=headers)
+        if stt_readiness.status_code != 200 and stt_readiness.status_code != 421:
+            logger.info("Couldn't connect to stt.")
+            raise Exception("Couldn't connect to stt.")
 
-    stt_readiness: Response = requests.get(STT_BASE_URL, timeout=5, headers=headers)
-    if stt_readiness.status_code != 200 and stt_readiness.status_code != 421:
-        logger.info("Couldn't connect to stt.")
-        raise Exception("Couldn't connect to stt.")
+        models_response: Response = requests.get(
+            f"{STT_BASE_URL}/v1/models", timeout=5, headers=headers
+        )
 
-    models_response: Response = requests.get(
-        f"{STT_BASE_URL}/v1/models", timeout=5, headers=headers
-    )
+        open_ai_compatible_server = True
 
-    open_ai_compatible_server = True
+        if models_response.status_code != 200:
+            open_ai_compatible_server = False
 
-    if models_response.status_code != 200:
-        open_ai_compatible_server = False
+        token = get_token()
 
-    token = get_token()
+        task_id = str(uuid.uuid4())
 
-    task_id = str(uuid.uuid4())
-
-    job_response: Response = requests.get(
-        f"{ARISTOTE_API_BASE_URL}/v1/enrichments/transcription/job/oldest?taskId={task_id}",
-        headers={
-            "Authorization": "Bearer " + token,
-            "Accept": "application/json",
-        },
-        timeout=30,
-    )
-
+        job_response: Response = requests.get(
+            f"{ARISTOTE_API_BASE_URL}/v1/enrichments/transcription/job/oldest?taskId={task_id}",
+            headers={
+                "Authorization": "Bearer " + token,
+                "Accept": "application/json",
+            },
+            timeout=30,
+        )
+    except Exception as error:
+        logger.error("Error during workflow execution. Error : %s", error)
+        return
     if job_response.status_code == 200:
         json_response = job_response.json()
         enrichment_id = json_response["enrichmentId"]
@@ -246,107 +248,125 @@ async def aristote_worklow():
             failure_cause=f"Whisper error : {stt_response.json()}",
         )
         return
+    try:
+        segments = (
+            transcript_json.get("chunks") or transcript_json.get("segments") or []
+        )
 
-    segments = transcript_json.get("chunks") or transcript_json.get("segments") or []
+        if 0 == len(segments):
+            if "words" in transcript_json and len(transcript_json["words"]) > 0:
+                segments = [
+                    {
+                        "text": transcript_json["text"],
+                        "start": transcript_json["words"][0]["start"],
+                        "end": transcript_json["words"][-1]["end"],
+                        "words": transcript_json["words"],
+                    }
+                ]
+            else:
+                transcription_fail(
+                    enrichment_id=enrichment_id,
+                    task_id=task_id,
+                    token=token,
+                    failure_cause="Generated empty transcript",
+                    exit_with_error=False,
+                )
+                return
 
-    if 0 == len(segments):
-        if "words" in transcript_json and len(transcript_json["words"]) > 0:
-            segments = [
-                {
-                    "text": transcript_json["text"],
-                    "start": transcript_json["words"][0]["start"],
-                    "end": transcript_json["words"][-1]["end"],
-                    "words": transcript_json["words"],
-                }
-            ]
-        else:
-            transcription_fail(
-                enrichment_id=enrichment_id,
-                task_id=task_id,
-                token=token,
-                failure_cause="Generated empty transcript",
-                exit_with_error=False,
+        def _seg_start(segment: dict) -> float:
+            return (
+                float(segment["start"])
+                if open_ai_compatible_server
+                else float(segment["timestamp"][0])
             )
-            return
 
-    def _seg_start(segment: dict) -> float:
-        return (
-            float(segment["start"])
-            if open_ai_compatible_server
-            else float(segment["timestamp"][0])
-        )
-
-    def _seg_end(segment: dict) -> float:
-        return (
-            float(segment["end"])
-            if open_ai_compatible_server
-            else float(segment["timestamp"][1])
-        )
-
-    def _normalize_word(word: dict) -> dict:
-        return {
-            "text": word["word"] if open_ai_compatible_server else word["text"],
-            "start": (
-                float(word["start"])
+        def _seg_end(segment: dict) -> float:
+            return (
+                float(segment["end"])
                 if open_ai_compatible_server
-                else float(word["timestamp"][0])
-            ),
-            "end": (
-                float(word["end"])
-                if open_ai_compatible_server
-                else float(word["timestamp"][1])
-            ),
-        }
+                else float(segment["timestamp"][1])
+            )
 
-    def _global_words_norm() -> list:
-        return [_normalize_word(w) for w in (transcript_json.get("words") or [])]
-
-    def _words_for_segment_from_global(
-        seg_s: float, seg_e: float, global_words: list
-    ) -> list:
-        eps = 1e-6
-        out = []
-        for w in global_words:
-            if w["end"] >= seg_s - eps and w["start"] <= seg_e + eps:
-                out.append(w)
-        return out
-
-    global_words = _global_words_norm()
-
-    transcript = {
-        "original_file_name": "",
-        "language": transcript_json["language"],
-        "text": transcript_json["text"],
-        "sentences": [
-            {
-                "text": segment["text"],
-                "start": _seg_start(segment),
-                "end": _seg_end(segment),
-                "words": (
-                    [_normalize_word(w) for w in segment.get("words", [])]
-                    if segment.get("words")
-                    else _words_for_segment_from_global(
-                        _seg_start(segment), _seg_end(segment), global_words
-                    )
+        def _normalize_word(word: dict) -> dict:
+            return {
+                "text": word["word"] if open_ai_compatible_server else word["text"],
+                "start": (
+                    float(word["start"])
+                    if open_ai_compatible_server
+                    else float(word["timestamp"][0])
+                ),
+                "end": (
+                    float(word["end"])
+                    if open_ai_compatible_server
+                    else float(word["timestamp"][1])
                 ),
             }
-            for segment in segments
-        ],
-    }
 
+        def _global_words_norm() -> list:
+            return [_normalize_word(w) for w in (transcript_json.get("words") or [])]
+
+        def _words_for_segment_from_global(
+            seg_s: float, seg_e: float, global_words: list
+        ) -> list:
+            eps = 1e-6
+            out = []
+            for w in global_words:
+                if w["end"] >= seg_s - eps and w["start"] <= seg_e + eps:
+                    out.append(w)
+            return out
+
+        global_words = _global_words_norm()
+
+        transcript = {
+            "original_file_name": "",
+            "language": transcript_json["language"],
+            "text": transcript_json["text"],
+            "sentences": [
+                {
+                    "text": segment["text"],
+                    "start": _seg_start(segment),
+                    "end": _seg_end(segment),
+                    "words": (
+                        [_normalize_word(w) for w in segment.get("words", [])]
+                        if segment.get("words")
+                        else _words_for_segment_from_global(
+                            _seg_start(segment), _seg_end(segment), global_words
+                        )
+                    ),
+                }
+                for segment in segments
+            ],
+        }
+    except Exception as error:
+        logger.error("Error while parsing transcript. Error : %s", error)
+        transcription_fail(
+            enrichment_id=enrichment_id,
+            task_id=task_id,
+            token=token,
+            failure_cause=f"Error while parsing transcript : {error}",
+        )
+        return
     with tempfile.NamedTemporaryFile(mode="w+", delete=False) as temp_file:
         json.dump(transcript, temp_file)
 
     files = {"transcript": (temp_file.name, open(temp_file.name, "rb"))}
-
-    transcription_response: Response = requests.post(
-        f"{ARISTOTE_API_BASE_URL}/v1/enrichments/{enrichment_id}/versions/initial/transcript",
-        data={"taskId": task_id, "status": "OK"},
-        files=files,
-        headers={"Authorization": "Bearer " + token},
-        timeout=30,
-    )
-
+    try:
+        transcription_response: Response = requests.post(
+            f"{ARISTOTE_API_BASE_URL}/v1/enrichments/{enrichment_id}/versions/initial/transcript",
+            data={"taskId": task_id, "status": "OK"},
+            files=files,
+            headers={"Authorization": "Bearer " + token},
+            timeout=30,
+        )
+    except Exception as error:
+        logger.error("Error while sending transcription response. Error : %s", error)
+        transcription_fail(
+            enrichment_id=enrichment_id,
+            task_id=task_id,
+            token=token,
+            failure_cause=f"Error while sending transcription response : {error}",
+        )
+        return
     if transcription_response.status_code == 200:
         logger.info("Transcription successful !")
     else:
