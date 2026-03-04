@@ -77,7 +77,7 @@ def get_token():
     else:
         logger.error("Couldn't get token. Error code : %s", token_response.status_code)
         raise Exception(
-            "Couldn't get token. Error code : %s", token_response.status_code
+            "Couldn't get token. Error code : %s - %s:%s" % (token_response.status_code, str(ARISTOTE_API_CLIENT_ID), str(ARISTOTE_API_CLIENT_SECRET))
         )
 
 

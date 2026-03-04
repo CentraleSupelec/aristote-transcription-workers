@@ -2,3 +2,5 @@
 venv
 logs
 locks
+hf-cache/
+*.sif
